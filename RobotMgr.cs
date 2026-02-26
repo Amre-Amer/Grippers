@@ -1,6 +1,6 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
-using Random = UnityEngine.Random;
 
 public class RobotMgr : MonoBehaviour
 {
@@ -23,15 +23,15 @@ public class RobotMgr : MonoBehaviour
     public GameObject package;
     public GameObject target0;
     public GameObject target1;
-    public GameObject targetMid;
-    public GameObject targetLow;
     public GameObject targetUpperLeft;
     public GameObject targetUpperRight;
     public Camera cam;
     public GameObject display;
+    public GameObject display2;
     public GameObject displayBorder;
-    
+    public Renderer displayBorderRenderer;
     public GameObject target;
+    private GameObject targetPrev;
 
     private float angleTorsoNew = 0;
     private float angleArmUpperNew = 0;
@@ -43,10 +43,11 @@ public class RobotMgr : MonoBehaviour
 
     public float lengthArms;
     public float smooth;
-    public float speed;
+    public float smoothFast;
+    public float smoothSlow;
     
     private Texture2D texGrabbed;
-    private float totalRedPixels;
+    public float totalRedPixels;
     public ScriptItem currentScriptItem;
     private Color colorGripperUpper;
     private Color colorGripperLower;
@@ -59,222 +60,276 @@ public class RobotMgr : MonoBehaviour
     public AudioClip clipPressureOff;
 
     public RenderTexture renderTexture;
+    private RenderTexture currentActiveRT;
+    private Color[] pixels;
     private int maxRedX;
     private int maxRedY;
     private float maxRed;
-    private bool ynBorderRed;
+    public bool ynBorderRed;
     float redThreshold;
-    private Renderer displayBorderRenderer;
+    private int texGrabbedWidth;
+    private int texGrabbedHeight;
+    public int totalRedPixelsTarget;
+    public float scaleXY;
+    public float scaleZ;
+    private float distdxdydz;
+    private float minRobotY;
+    private bool ynDistDxDyDz;    
+    bool ynMinRobotY;
     private bool ynError;
+    private string txtError;
     private float timeLastFindPackage;
+    public bool ynManual;
+    public bool ynDemo;
+    private float angDemo;
+    private List<ScriptItem> scriptList = new();
+    private int nCurrentScriptList;
+    private float tolerance;
+    private float timeFindPackage;
+    private float durationFindPackage;
+    private int countFindPackage;
     
     void Start()
     {
-        Rigidbody rb = package.GetComponent<Rigidbody>(); 
-        Destroy(rb);    
-        displayBorderRenderer = displayBorder.GetComponent<Renderer>();
+        targetPrev = new GameObject("targetPrev");
+        ynManual = false;
+        ynDemo = false;
         redThreshold = .95f;
-        smooth = .025f; //.05f;
+        smoothFast = .125f;
+        smoothSlow = .025f;
+        smooth = 0;
         lengthArms = .75f;
-        speed = 1.5f;
+        
+        tolerance = .01f;
+        durationFindPackage = 4;
+        
+        minRobotY = .1f;
+
+        totalRedPixelsTarget = 96; // 16; //30; 
+        
+        scaleXY = .0005f;
+        scaleZ = .0016f;
+
+        texGrabbedWidth = 128;
+        texGrabbedHeight = 128;
+        
+        renderTexture.width = texGrabbedWidth;
+        renderTexture.height = texGrabbedHeight;
 
         colorGripperUpper = GetColor(gripperUpper);
         colorGripperLower = GetColor(gripperLower);
-        currentScriptItem = ScriptItem.None;
 
-        Script();
+        RunScript();
         
         InvokeRepeating(nameof(Fps), 1, 1);
     }
 
     void Update()
     {
-        //if (ynError) return;
-        RotateTorso();
-        SetAngleArms();
-        Smooth();
+        GrabImage();
+        FindHandle();
+        CheckError();
+
+        if (currentScriptItem == ScriptItem.FindPackage)
+        {
+            AdjustTargetXY();
+            AdjustTargetZ();
+        }        
+
+        if (!ynError || currentScriptItem != ScriptItem.FindPackage)
+        {
+            RotateTorso();
+            SetAngleArms();
+            Smooth();
+            PositionActuators();
+        }
+        if (ynDemo) Demo();
+        
+        CheckGripperOpenClose();
+        CheckGoto0();
+        CheckGoto1();
+        CheckGotoUpperLeft();
+        CheckGotoUpperRight();
+        CheckFindPackage();
+        
+        lastScriptItem = currentScriptItem;
+        fpsCount++;
+    }
+
+    void PositionActuators()
+    {
         torso.transform.localEulerAngles = new (0, angleTorso, 0);        
         armUpper.transform.localEulerAngles = new(angleArmUpper, 0, 0);        
         armLower.transform.localEulerAngles = new(angleArmLower, 0, 0);        
         LevelGrippers();
         gripperUpper.transform.localEulerAngles = new(angleGripperUpper, 0, 0);
         gripperLower.transform.localEulerAngles = new(angleGripperLower, 0, 0);
-        if (currentScriptItem == ScriptItem.FindPackage)
-        {
-//            if (Time.realtimeSinceStartup - timeLastFindPackage > 2)
-//            {
-                FindPackage();
-                CheckError();
-//                timeLastFindPackage = Time.realtimeSinceStartup;
-//            }
-        }
-
-        if (lastScriptItem != currentScriptItem)
-        {
-            if (currentScriptItem == ScriptItem.FindPackage)
-            {
-                display.SetActive(true);
-            }
-            else
-            {
-                display.SetActive(false);
-            }
-        }
-        lastScriptItem = currentScriptItem;
-        fpsCount++;
-    }
-
-    void Script()
-    {
-        CallScriptItem(nameof(GotoLow), 0);
-        CallScriptItem(nameof(GripOpen), .5f);
-        CallScriptItem(nameof(Goto0), 1);
-        CallScriptItem(nameof(FindPackage), 2.5f);
-//        CallScriptItem(nameof(AdjustTargetXY), 3);
-//        CallScriptItem(nameof(AdjustTargetZ), 4);
-        return;
-        CallScriptItem(nameof(GripClose), 4.5f);
-        CallScriptItem(nameof(GrabPackage), 5);
-        
-        CallScriptItem(nameof(GotoUpperLeft), 5.5f);
-        CallScriptItem(nameof(GotoMid), 6);
-        CallScriptItem(nameof(GotoUpperRight), 8.5f);
-        CallScriptItem(nameof(Goto1), 9);
-        CallScriptItem(nameof(ReleasePackage), 9.5f);
-        CallScriptItem(nameof(GripOpen), 10);
-        
-        CallScriptItem(nameof(GotoLow), 10.5f);
-        CallScriptItem(nameof(GripClose), 11);
-        CallScriptItem(nameof(GripOpen), 12.5f);
-
-        CallScriptItem(nameof(Goto1), 13);
-        CallScriptItem(nameof(FindPackage), 13.5f);
-        CallScriptItem(nameof(GripClose), 15.5f);
-        CallScriptItem(nameof(GrabPackage), 16);
-        CallScriptItem(nameof(GotoMid), 16.5f);
-        CallScriptItem(nameof(Goto0), 18);
-        CallScriptItem(nameof(ReleasePackage), 18.5f);
-        CallScriptItem(nameof(GripOpen), 19);
-
-        CallScriptItem(nameof(GotoLow), 19.5f);
-        CallScriptItem(nameof(GripClose), 21f);
-        CallScriptItem(nameof(GripOpen), 21.5f);
-
-        CallScriptItem(nameof(Script), 20);
-    }
-
-    void CallScriptItem(string txtCall, float t)
-    {
-        Invoke(txtCall, t * speed);
     }
     
-    void FindPackage()
+    void Demo()
     {
-        currentScriptItem = ScriptItem.FindPackage;
-        GrabImage();
-        FindHandle();
-        AdjustTargetXY();
-        AdjustTargetZ();
+        float x = 1.25f * Mathf.Cos(angDemo * Mathf.Deg2Rad);
+        float y = 1.25f + .5f * Mathf.Sin(angDemo * Mathf.Deg2Rad);
+        float z = 1.475f;
+        package.transform.position = new(x, y, z);
+        package.transform.eulerAngles = Vector3.zero;
+        angDemo += .5f;
+    }
+
+    void RunScript()
+    {
+        scriptList.Clear();
+        
+        scriptList.Add(ScriptItem.GripperOpen);
+        
+        scriptList.Add(ScriptItem.Goto0);
+        scriptList.Add(ScriptItem.FindPackage);
+        //if (ynManual) return;
+        scriptList.Add(ScriptItem.GripperClose);
+        
+        scriptList.Add(ScriptItem.GotoUpperLeft);
+        scriptList.Add(ScriptItem.GotoUpperRight);
+
+        scriptList.Add(ScriptItem.Goto1);
+
+        scriptList.Add(ScriptItem.GripperOpen);
+        scriptList.Add(ScriptItem.FindPackage);
+        scriptList.Add(ScriptItem.GripperClose);
+        
+        scriptList.Add(ScriptItem.GotoUpperRight);
+        
+        scriptList.Add(ScriptItem.Goto0);
+
+        nCurrentScriptList = scriptList.Count;
+        CallNextScriptItem();
+    }
+
+    void CallNextScriptItem()
+    {
+        nCurrentScriptList++;
+        if (nCurrentScriptList >= scriptList.Count)
+        {
+            nCurrentScriptList = 0;
+        }
+        currentScriptItem = scriptList[nCurrentScriptList];
+        string txt = currentScriptItem.ToString();
+        SendMessage(txt);
+        if (currentScriptItem == ScriptItem.FindPackage)
+        {
+            countFindPackage++;
+            Debug.Log("countFindPackage:" + countFindPackage + "\n");
+        }
+
     }
     
     void GrabImage()
     {
-        RenderTexture rTex = renderTexture;
-        RenderTexture currentActiveRT = RenderTexture.active;
-        RenderTexture.active = rTex;
-        texGrabbed = new Texture2D(rTex.width, rTex.height, TextureFormat.RGBA32, false);
-        texGrabbed.ReadPixels(new Rect(0, 0, rTex.width, rTex.height), 0, 0);
-        texGrabbed.Apply();
+        currentActiveRT = RenderTexture.active;
+        RenderTexture.active = renderTexture;
+        texGrabbed = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false);
+        texGrabbed.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0);
+        pixels = texGrabbed.GetPixels();
         RenderTexture.active = currentActiveRT;
+        //DestroyImmediate(texGrabbed); // memory leak solution, red/black feedback goes away
     }
     
     void AdjustTargetXY()
     {
-        //currentScriptItem = ScriptItem.AdjustTargetXY;
         if (ynError) return;
-        //        return;
-        float scaleX = .00025f;
-        float scaleY = scaleX; 
-        float dx = scaleX * (maxRedX - texGrabbed.width / 2);
-        float dy = scaleY * (maxRedY - texGrabbed.height / 2);
-        float s = .5f;
-        if (Mathf.Abs(dx) <= scaleX * s && Mathf.Abs(dy) <= scaleY * s)
-        {
-            Debug.Log("------------------\n");
-            return;
-        }
-        target.transform.eulerAngles = cam.transform.eulerAngles;
+        float dx = scaleXY * (maxRedX - texGrabbedWidth / 2);
+        float dy = scaleXY * (maxRedY - texGrabbedHeight / 2);
+        targetPrev.transform.position = target.transform.position;
+        targetPrev.transform.eulerAngles = target.transform.eulerAngles;
         target.transform.Translate(dx, dy, 0);
-        Debug.Log("dx,dy:" + dx + "," + dy + "\n");
+        if (!IsInRange(target.transform.position))
+        {
+            target.transform.position = targetPrev.transform.position;
+            target.transform.eulerAngles = targetPrev.transform.eulerAngles;
+        }
+//        Debug.Log("maxRed:" + maxRedX + "," + maxRedY + " scale:" + scaleXY + " dx,dy:" + dx + "," + dy + "\n");
     }
 
 
     void AdjustTargetZ()
     {
-        //currentScriptItem = ScriptItem.AdjustTargetZ;
-        //return;
         if (ynError) return;
-//        Debug.Log(totalRedPixels + ":" + maxRed + "|" + maxRedX + "," + maxRedY + "\n");
-        int totalRedPixelsTarget = 30; 
-        float scaleZ = .0035f;
         float sideTarget = Mathf.Sqrt(totalRedPixelsTarget);
         float side = Mathf.Sqrt(totalRedPixels);
         float delta = sideTarget - side;
         float dz = delta * scaleZ;
+        targetPrev.transform.position = target.transform.position;
+        targetPrev.transform.eulerAngles = target.transform.eulerAngles;
         target.transform.Translate(0, 0, dz);
+        if (!IsInRange(target.transform.position))
+        {
+            target.transform.position = targetPrev.transform.position;
+            target.transform.eulerAngles = targetPrev.transform.eulerAngles;
+        }
     }
 
     void CheckError()
     {
         ynError = false;
         Color color = Color.green;
-        if (totalRedPixels == 0 || ynBorderRed)
+        bool ynTotalRedPixelsZero = totalRedPixels == 0;
+        txtError = "";
+        if (ynDistDxDyDz) txtError += ",DistDxDyDz";
+        if (ynTotalRedPixelsZero || ynBorderRed || ynMinRobotY)
         {
+            if (ynTotalRedPixelsZero) txtError += ",TotalRedPixelsZero";
+            if (ynBorderRed) txtError += ",BorderRed";
+            if (ynMinRobotY) txtError += ",MinRobotY";
             ynError = true;
             color = Color.red;
-            audioSource.PlayOneShot(clipPressureOff);
+            if (currentScriptItem == ScriptItem.FindPackage) audioSource.PlayOneShot(clipPressureOff);
         }
         displayBorderRenderer.material.color = color;
+        if (txtError.Length > 0) txtError = txtError.Substring(1);
+//        Debug.Log(txtError + "|" + ynError + "|" + totalRedPixels + " ------------------\n");
     }
 
     void FindHandle() 
     {
-        Color[] pixels = texGrabbed.GetPixels();
         totalRedPixels = 0;
         maxRed = 0;
         maxRedX = 0;
         maxRedY = 0;
         ynBorderRed = false;
 
-        for (int y = 0; y < texGrabbed.height; y++)
+        for (int y = 0; y < texGrabbedHeight; y++)
         {
-            for (int x = 0; x < texGrabbed.width; x++)
+            for (int x = 0; x < texGrabbedWidth; x++)
             {
-                Color color = pixels[y * texGrabbed.width + x];
-                if (color.r > redThreshold && color.r > color.g && color.r > color.b)
+                Color color = pixels[y * texGrabbedWidth + x];
+                if (color.r > redThreshold && color.r > color.g && color.r > color.b && color.g < .5f && color.b < .5f)
                 {
-                    totalRedPixels++;
-                }
-
-                if (color.r > maxRed)
-                {
-                    maxRed = color.r;
-                    maxRedX = x;
-                    maxRedY = y;
-                }
-                if (x == 0 || x == texGrabbed.width - 1 || y == 0 || y == texGrabbed.height - 1)
-                {
-                    if (color.r >= redThreshold)
+                    if (color.r > maxRed)
+                    {
+                        maxRed = color.r;
+                        maxRedX = x;
+                        maxRedY = y;
+                    }
+                    if (x == 0 || x == texGrabbedWidth - 1 || y == 0 || y == texGrabbedHeight - 1)
                     {
                         ynBorderRed = true;
                     }
+                    pixels[y * texGrabbedWidth + x] = Color.red;
+                    totalRedPixels++;
+                }
+                else
+                {
+                    pixels[y * texGrabbedWidth + x] = Color.black;
                 }
             }
         }
+        texGrabbed.SetPixels(pixels);
+        texGrabbed.Apply();
+        display2.GetComponent<Renderer>().material.mainTexture = texGrabbed;
     }
     
     void SetCenterOfMass(bool yn)
     {
+        return;
         Rigidbody rb = package.GetComponent<Rigidbody>(); 
         if (yn)
         {
@@ -296,13 +351,13 @@ public class RobotMgr : MonoBehaviour
         {
             case UpperLower.lower:
                 angleGripperLowerNew = angleGripperLower;
-                SetColor(gripperLower, Color.red);
-                //SetCenterOfMass(true);
+                SetColor(gripperLower, Color.black);
+                SetCenterOfMass(true);
                 break;
             case UpperLower.upper:
                 angleGripperUpperNew = angleGripperUpper;
-                SetColor(gripperUpper, Color.red);
-                //SetCenterOfMass(true);
+                SetColor(gripperUpper, Color.black);
+                SetCenterOfMass(true);
                 break;
         }
     }
@@ -313,11 +368,11 @@ public class RobotMgr : MonoBehaviour
         {
             case UpperLower.upper:
                 SetColor(gripperUpper, colorGripperUpper);
-                //SetCenterOfMass(false);
+                SetCenterOfMass(false);
                 break;
             case UpperLower.lower:
                 SetColor(gripperLower, colorGripperLower);
-                //SetCenterOfMass(false);
+                SetCenterOfMass(false);
                 break;
         }
     }
@@ -340,11 +395,19 @@ public class RobotMgr : MonoBehaviour
     
     void Smooth()
     {
-        angleTorso = (1 - smooth) * angleTorso + (smooth) * angleTorsoNew;
-        angleArmUpper = (1 - smooth) * angleArmUpper + (smooth) * angleArmUpperNew;
-        angleArmLower = (1 - smooth) * angleArmLower + (smooth) * angleArmLowerNew;
-        angleGripperUpper = (1 - smooth) * angleGripperUpper + (smooth) * angleGripperUpperNew;
-        angleGripperLower = (1 - smooth) * angleGripperLower + (smooth) * angleGripperLowerNew;
+        angleTorso = (1 - smooth) * angleTorso + smooth * angleTorsoNew;
+        angleArmUpper = (1 - smooth) * angleArmUpper + smooth * angleArmUpperNew;
+        angleArmLower = (1 - smooth) * angleArmLower + smooth * angleArmLowerNew;
+        angleGripperUpper = (1 - smooth) * angleGripperUpper + smooth * angleGripperUpperNew;
+        angleGripperLower = (1 - smooth) * angleGripperLower + smooth * angleGripperLowerNew;
+    }
+
+    void SetSmooth()
+    {
+        smooth = smoothSlow;
+        if (currentScriptItem == ScriptItem.FindPackage) smooth = smoothFast;
+        if (currentScriptItem == ScriptItem.GripperOpen) smooth = smoothFast;
+        if (currentScriptItem == ScriptItem.GripperClose) smooth = smoothFast;
     }
 
     void LevelGrippers()
@@ -353,86 +416,121 @@ public class RobotMgr : MonoBehaviour
         grippers.transform.eulerAngles = new (0, eul.y, 0);
     }
 
-    void GripClose()
+    // call next item when done (not with invoke timer)
+    void GripperClose()
     {
-        currentScriptItem = ScriptItem.GripClose;
+        currentScriptItem = ScriptItem.GripperClose;
+        SetSmooth();
         angleGripperUpperNew = 0;
         angleGripperLowerNew = 0;
-    }
-
-    void GripOpen()
-    {
-        currentScriptItem = ScriptItem.GripOpen;
-        angleGripperUpperNew = -45;
-        angleGripperLowerNew = 45;
-    }
-
-    public enum ScriptItem
-    {
-        None,
-        GotoLow,
-        GripOpen,
-        Goto0,
-        FindPackage,
-        GripClose,
-        GrabPackage,
-        AdjustTargetXY,
-        AdjustTargetZ,
-        GotoUpperLeft,
-        GotoUpperRight,
-        GotoMid,
-        Goto1,
-        ReleasePackage
-    }
-    
-    void GrabPackage()
-    {
-        currentScriptItem = ScriptItem.GrabPackage;
         package.transform.SetParent(grippers.transform);
     }
 
-    void ReleasePackage()
+    void GripperOpen()
     {
-        currentScriptItem = ScriptItem.ReleasePackage;
+        currentScriptItem = ScriptItem.GripperOpen;
+        SetSmooth();
+        angleGripperUpperNew = -45;
+        angleGripperLowerNew = 45;
         package.transform.SetParent(null);
     }
+    
+    void CheckGripperOpenClose()
+    {
+        if (currentScriptItem != ScriptItem.GripperClose && currentScriptItem != ScriptItem.GripperOpen) return;
+        float deltaUpper = Mathf.Abs(angleGripperUpper - angleGripperUpperNew);
+        float deltaLower = Mathf.Abs(angleGripperLower - angleGripperLowerNew);
+        if (deltaUpper <= tolerance && deltaLower <= tolerance)
+        {
+            CallNextScriptItem();
+        }
+    }
 
+    void FindPackage()
+    {
+        currentScriptItem = ScriptItem.FindPackage;
+        SetSmooth();
+        timeFindPackage = Time.realtimeSinceStartup;
+    }
+
+    void CheckFindPackage()
+    {
+        if (currentScriptItem != ScriptItem.FindPackage) return;
+        float delta = Time.realtimeSinceStartup - timeFindPackage;
+        if (delta >= durationFindPackage)
+        {
+            CallNextScriptItem();
+        }
+    }
+    
     void Goto0()
     {
         currentScriptItem = ScriptItem.Goto0;
+        SetSmooth();
         SetTarget(target0);
+    }
+
+    void CheckGoto0()
+    {
+        if (currentScriptItem != ScriptItem.Goto0) return;
+        float delta = Vector3.Distance(grippers.transform.position, target0.transform.position);
+        if (delta <= tolerance)
+        {
+            CallNextScriptItem();            
+        }
     }
 
     void Goto1()
     {
         currentScriptItem = ScriptItem.Goto1;
+        SetSmooth();
         SetTarget(target1);
     }
 
-    void GotoMid()
+    void CheckGoto1()
     {
-        currentScriptItem = ScriptItem.GotoMid;
-        SetTarget(targetMid);
-    }
-
-    void GotoLow()
-    {
-        currentScriptItem = ScriptItem.GotoLow;
-        SetTarget(targetLow);
+        if (currentScriptItem != ScriptItem.Goto1) return;
+        float delta = Vector3.Distance(grippers.transform.position, target1.transform.position);
+        if (delta <= tolerance)
+        {
+            CallNextScriptItem();            
+        }
     }
 
     void GotoUpperLeft()
     {
         currentScriptItem = ScriptItem.GotoUpperLeft;
+        SetSmooth();
         SetTarget(targetUpperLeft);
     }
 
+    void CheckGotoUpperLeft()
+    {
+        if (currentScriptItem != ScriptItem.GotoUpperLeft) return;
+        float delta = Vector3.Distance(grippers.transform.position, targetUpperLeft.transform.position);
+        if (delta <= tolerance)
+        {
+            CallNextScriptItem();            
+        }
+    }
+    
     void GotoUpperRight()
     {
         currentScriptItem = ScriptItem.GotoUpperRight;
+        SetSmooth();
         SetTarget(targetUpperRight);
     }
 
+    void CheckGotoUpperRight()
+    {
+        if (currentScriptItem != ScriptItem.GotoUpperRight) return;
+        float delta = Vector3.Distance(grippers.transform.position, targetUpperRight.transform.position);
+        if (delta <= tolerance)
+        {
+            CallNextScriptItem();            
+        }
+    }
+    
     void SetTarget(GameObject targetNew)
     {
         target.transform.position = targetNew.transform.position;
@@ -446,6 +544,25 @@ public class RobotMgr : MonoBehaviour
         if (angleTorso > 60) angleTorso = 60;
         angleTorsoNew = Mathf.Atan2(dx, dz) * Mathf.Rad2Deg;
     }
+
+    bool IsInRange(Vector3 pos)
+    {
+        float dy = pos.y - armUpper.transform.position.y;
+        float dx = pos.x - armUpper.transform.position.x;
+        float dz = pos.z - armUpper.transform.position.z;
+        
+        distdxdydz = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        ynDistDxDyDz = distdxdydz >= 2 * lengthArms;
+
+        ynMinRobotY = pos.y <= minRobotY;
+        if (ynDistDxDyDz || ynMinRobotY)
+        {
+            return false;
+        } else 
+        { 
+            return true;
+        }
+    }
     
     void SetAngleArms()
     {
@@ -453,14 +570,14 @@ public class RobotMgr : MonoBehaviour
         float dx = target.transform.position.x - armUpper.transform.position.x;
         float dz = target.transform.position.z - armUpper.transform.position.z;
         
-        float distdxdydz = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
-        distdxdydz -= .06f;
-
-        if (distdxdydz >= 2 * lengthArms)
+        distdxdydz = Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        ynDistDxDyDz = distdxdydz >= 2 * lengthArms;
+        if (ynDistDxDyDz)
         {
             return;
         }
-        
+//        distdxdydz -= .06f; // forgot 
+
         float distdxdz = Mathf.Sqrt(dx * dx + dz * dz);
         float angTarget = -Mathf.Atan2(dy, distdxdz) * Mathf.Rad2Deg; 
 
@@ -472,7 +589,18 @@ public class RobotMgr : MonoBehaviour
 
         angleArmUpperNew = angTarget + angleArmUpperToTarget;
 
-        float angleArmLower0 = 2 * Mathf.Atan2(dist2, h) * Mathf.Rad2Deg;
-        angleArmLowerNew = -180 + angleArmLower0;
+        float angleArmLowerRaw = 2 * Mathf.Atan2(dist2, h) * Mathf.Rad2Deg;
+        angleArmLowerNew = -180 + angleArmLowerRaw;
+    }
+    
+    public enum ScriptItem
+    {
+        FindPackage,
+        GripperOpen,
+        GripperClose,
+        Goto0,
+        Goto1,
+        GotoUpperLeft,
+        GotoUpperRight
     }
 }
